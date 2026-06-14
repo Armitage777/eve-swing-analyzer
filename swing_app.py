@@ -19,7 +19,16 @@ def load_sde_data():
     try:
         groups = pd.read_csv("invMarketGroups.csv")
         types = pd.read_csv("invTypes.csv")
+        
+        # --- ИСПРАВЛЕНИЕ ---
+        # Принудительно конвертируем колонки с ID в числа, игнорируя текст и пустые строки ("")
+        types['marketGroupID'] = pd.to_numeric(types['marketGroupID'], errors='coerce')
+        groups['marketGroupID'] = pd.to_numeric(groups['marketGroupID'], errors='coerce')
         groups['parentGroupID'] = pd.to_numeric(groups['parentGroupID'], errors='coerce')
+        
+        # Сразу отбрасываем системные предметы, у которых нет рыночной группы (они нам не нужны)
+        types = types.dropna(subset=['marketGroupID'])
+        
         return groups, types
     except FileNotFoundError:
         st.error("Файлы invMarketGroups.csv и invTypes.csv не найдены! Загрузите их в папку с приложением.")
@@ -27,7 +36,7 @@ def load_sde_data():
 
 groups_df, types_df = load_sde_data()
 
-# Функция рекурсивного построения дерева для streamlit-tree-select
+# Функция рекурсивного построения дерева
 @st.cache_data
 def build_market_tree(groups_df):
     if groups_df.empty:
@@ -36,13 +45,13 @@ def build_market_tree(groups_df):
     children_dict = {}
     root_nodes = []
     
-    # Распределяем все группы по их родителям
     for _, row in groups_df.iterrows():
         group_id = row['marketGroupID']
         parent_id = row['parentGroupID']
-        name = row['marketGroupName']
+        name = str(row['marketGroupName'])
         
-        node = {"label": name, "value": group_id}
+        # Гарантируем, что ID узла дерева - это стандартное целое число
+        node = {"label": name, "value": int(group_id)}
         
         if pd.isna(parent_id):
             root_nodes.append(node)
@@ -51,7 +60,6 @@ def build_market_tree(groups_df):
                 children_dict[parent_id] = []
             children_dict[parent_id].append(node)
             
-    # Рекурсивно собираем дерево
     def attach_children(nodes):
         for node in nodes:
             node_id = node['value']
@@ -128,15 +136,16 @@ if not groups_df.empty:
     nodes = build_market_tree(groups_df)
     
     with st.sidebar:
-        # Отрисовка интерактивного дерева с чекбоксами
         tree_state = tree_select(nodes, no_cascade=False)
         selected_group_ids = tree_state.get('checked', [])
         
         if selected_group_ids:
-            # Выбираем предметы, которые принадлежат к отмеченным группам
-            items_to_analyze = types_df[types_df['marketGroupID'].isin(selected_group_ids)]
+            # Страховка: приводим выбранные деревом ID к числам (float), чтобы фильтр сработал идеально
+            valid_ids = [float(x) for x in selected_group_ids]
+            items_to_analyze = types_df[types_df['marketGroupID'].isin(valid_ids)]
+            
             if not items_to_analyze.empty:
-                st.info(f"Выбрано товаров для анализа: {len(items_to_analyze)}")
+                st.success(f"Выбрано товаров для анализа: {len(items_to_analyze)}")
                 if len(items_to_analyze) > 500:
                     st.warning("Внимание: Выбрано много товаров. Сбор данных из ESI займет время.")
                 
@@ -145,7 +154,7 @@ if not groups_df.empty:
             else:
                 st.warning("В выбранных группах нет конечных предметов.")
         else:
-            st.warning("Отметьте галочками интересующие группы товаров.")
+            st.info("Отметьте галочками интересующие группы товаров.")
 
 run_analysis = st.sidebar.button("Запустить анализ через ESI", type="primary", use_container_width=True)
 
@@ -153,7 +162,7 @@ run_analysis = st.sidebar.button("Запустить анализ через ESI
 # ОСНОВНАЯ ОБЛАСТЬ: АНАЛИЗ
 # ==========================================
 if run_analysis and len(selected_type_ids) > 0:
-    st.subheader(f"Анализ выбранных товаров")
+    st.subheader("Анализ выбранных товаров")
     
     progress_text = "Сбор истории продаж с серверов ESI..."
     progress_bar = st.progress(0, text=progress_text)
