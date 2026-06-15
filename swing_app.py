@@ -132,23 +132,37 @@ def fetch_deep_market_data(item_ids: list[int]) -> str:
         
     return json.dumps(deep_analysis_data)
 
-# --- АВТОМАТИЧЕСКИЙ ЗАПРОС СПИСКА МОДЕЛЕЙ ---
+# --- АВТОМАТИЧЕСКИЙ ЗАПРОС СПИСКА МОДЕЛЕЙ (ИСПРАВЛЕННЫЙ) ---
 @st.cache_data(show_spinner=False, ttl=1800)
 def fetch_available_models(token: str):
-    default_models = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"]
+    # Железобетонные алиасы для бесплатного тарифа
+    safe_defaults = [
+        "gemini-1.5-flash",
+        "gemini-1.5-flash-8b",
+        "gemini-2.0-flash"
+    ]
     if not token:
-        return default_models
+        return safe_defaults
+        
     try:
         temp_client = genai.Client(api_key=token)
         fetched = []
         for m in temp_client.models.list():
+            # Нам нужны только модели, поддерживающие генерацию контента
             if "generateContent" in m.supported_generation_methods:
                 name = m.name.replace("models/", "")
-                if any(x in name for x in ["flash", "pro"]):
+                # Оставляем только современные поколения, убираем embedding и vision-only
+                if ("1.5" in name or "2.0" in name) and "embedding" not in name:
                     fetched.append(name)
-        return fetched if fetched else default_models
+        
+        if fetched:
+            # Умная сортировка: выводим 1.5-flash на самое первое место, так как она самая стабильная
+            fetched.sort(key=lambda x: (0 if x == 'gemini-1.5-flash' else 1 if 'flash' in x else 2, x))
+            return fetched
+            
+        return safe_defaults
     except Exception:
-        return default_models
+        return safe_defaults
 
 # ==========================================
 # САЙДБАР: НАСТРОЙКИ, КЛЮЧ И ДЕРЕВО
@@ -163,12 +177,12 @@ st.sidebar.divider()
 st.sidebar.header("ИИ Аналитик")
 api_key = st.sidebar.text_input("Gemini API Key", type="password", help="Введите ваш ключ для авто-анализа")
 
-# Выбор модели на основе полученного списка
+# Выбор модели на основе надежного списка
 models_list = fetch_available_models(api_key)
-model_selected = st.sidebar.selectbox("Модель Gemini:", models_list, index=0, help="Список обновляется автоматически при вводе ключа")
+model_selected = st.sidebar.selectbox("Модель Gemini:", models_list, index=0, help="Flash-модели работают лучше всего на бесплатном тарифе")
 
 st.sidebar.divider()
-st.sidebar.header("Фильтры ):")
+st.sidebar.header("Фильтры Макро-анализа")
 min_daily_volume = st.sidebar.number_input("Мин. дневной объем (млн ISK)", value=500.0, step=50.0)
 min_spread_percent = st.sidebar.slider("Минимальный спред (коридор) %", min_value=1, max_value=50, value=10)
 
