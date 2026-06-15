@@ -2,4 +2,4 @@ streamlit
 pandas
 requests
 streamlit-tree-select
-matplotlib
+google-genai
