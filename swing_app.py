@@ -246,7 +246,7 @@ if not st.session_state.macro_results.empty:
     st.subheader("🤖 Этап 2: Полный ИИ-анализ стаканов")
     st.write("Нажмите кнопку ниже, чтобы ИИ сам выбрал 5 лучших товаров из таблицы выше, запросил их стаканы и сформировал торговые ордера.")
     
-    if st.button("2. Запустить ИИ-цикл (Gemini 1.5 Flash)", type="primary", use_container_width=True):
+    if st.button("2. Запустить ИИ-цикл (Gemini-3.5-flash)", type="primary", use_container_width=True):
         if not api_key:
             st.error("❌ Пожалуйста, введите ваш Gemini API Key в боковой панели слева.")
         else:
@@ -260,7 +260,7 @@ if not st.session_state.macro_results.empty:
                     
                     # Настраиваем чат с функцией
                     chat = client.chats.create(
-                        model="gemini-1.5-flash",
+                        model="gemini-3.5-flash",
                         config=types.GenerateContentConfig(
                             tools=[fetch_deep_market_data],
                             temperature=0.2, 
