@@ -19,6 +19,8 @@ ESI_BASE_URL = "https://esi.evetech.net/latest"
 # Инициализация кэша сессии
 if 'macro_results' not in st.session_state:
     st.session_state.macro_results = pd.DataFrame()
+if 'ai_analysis_result' not in st.session_state:
+    st.session_state.ai_analysis_result = None
 
 # ==========================================
 # ЗАГРУЗКА И ОБРАБОТКА SDE ФАЙЛОВ
@@ -27,14 +29,14 @@ if 'macro_results' not in st.session_state:
 def load_sde_data():
     try:
         groups = pd.read_csv("invMarketGroups.csv")
-        types = pd.read_csv("invTypes.csv")
+        types_file = pd.read_csv("invTypes.csv")
         
-        types['marketGroupID'] = pd.to_numeric(types['marketGroupID'], errors='coerce')
+        types_file['marketGroupID'] = pd.to_numeric(types_file['marketGroupID'], errors='coerce')
         groups['marketGroupID'] = pd.to_numeric(groups['marketGroupID'], errors='coerce')
         groups['parentGroupID'] = pd.to_numeric(groups['parentGroupID'], errors='coerce')
         
-        types = types.dropna(subset=['marketGroupID'])
-        return groups, types
+        types_file = types_file.dropna(subset=['marketGroupID'])
+        return groups, types_file
     except FileNotFoundError:
         st.error("Файлы invMarketGroups.csv и invTypes.csv не найдены! Загрузите их в папку с приложением.")
         return pd.DataFrame(), pd.DataFrame()
@@ -42,12 +44,12 @@ def load_sde_data():
 groups_df, types_df = load_sde_data()
 
 @st.cache_data
-def build_market_tree(groups_df):
-    if groups_df.empty: return []
+def build_market_tree(df):
+    if df.empty: return []
     children_dict = {}
     root_nodes = []
     
-    for _, row in groups_df.iterrows():
+    for _, row in df.iterrows():
         group_id = row['marketGroupID']
         parent_id = row['parentGroupID']
         name = str(row['marketGroupName'])
@@ -97,17 +99,10 @@ def fetch_deep_market_data(item_ids: list[int]) -> str:
     """
     Fetches detailed market history (last 30 days) and current live order books 
     (Top 10 buy/sell orders) for a specific list of EVE Online item IDs.
-    
-    Args:
-        item_ids: A list of integer Item IDs to analyze.
-        
-    Returns:
-        A JSON string containing the deep market data.
     """
     deep_analysis_data = []
     
     for item_id in item_ids:
-        # 1. История за 30 дней
         df_history = fetch_market_history(JITA_REGION_ID, item_id)
         history_data = []
         if df_history is not None and not df_history.empty:
@@ -118,7 +113,6 @@ def fetch_deep_market_data(item_ids: list[int]) -> str:
             clean_history['date'] = clean_history['date'].dt.strftime('%Y-%m-%d')
             history_data = clean_history.to_dict('records')
 
-        # 2. Текущий стакан
         orders_df = fetch_live_orders(JITA_REGION_ID, item_id)
         buy_orders, sell_orders = [], []
         if not orders_df.empty:
@@ -138,6 +132,24 @@ def fetch_deep_market_data(item_ids: list[int]) -> str:
         
     return json.dumps(deep_analysis_data)
 
+# --- АВТОМАТИЧЕСКИЙ ЗАПРОС СПИСКА МОДЕЛЕЙ ---
+@st.cache_data(show_spinner=False, ttl=1800)
+def fetch_available_models(token: str):
+    default_models = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"]
+    if not token:
+        return default_models
+    try:
+        temp_client = genai.Client(api_key=token)
+        fetched = []
+        for m in temp_client.models.list():
+            if "generateContent" in m.supported_generation_methods:
+                name = m.name.replace("models/", "")
+                if any(x in name for x in ["flash", "pro"]):
+                    fetched.append(name)
+        return fetched if fetched else default_models
+    except Exception:
+        return default_models
+
 # ==========================================
 # САЙДБАР: НАСТРОЙКИ, КЛЮЧ И ДЕРЕВО
 # ==========================================
@@ -151,8 +163,12 @@ st.sidebar.divider()
 st.sidebar.header("ИИ Аналитик")
 api_key = st.sidebar.text_input("Gemini API Key", type="password", help="Введите ваш ключ для авто-анализа")
 
+# Выбор модели на основе полученного списка
+models_list = fetch_available_models(api_key)
+model_selected = st.sidebar.selectbox("Модель Gemini:", models_list, index=0, help="Список обновляется автоматически при вводе ключа")
+
 st.sidebar.divider()
-st.sidebar.header("Фильтры Макро-анализа")
+st.sidebar.header("Фильтры ):")
 min_daily_volume = st.sidebar.number_input("Мин. дневной объем (млн ISK)", value=500.0, step=50.0)
 min_spread_percent = st.sidebar.slider("Минимальный спред (коридор) %", min_value=1, max_value=50, value=10)
 
@@ -199,11 +215,10 @@ if run_macro and len(selected_type_ids) > 0:
             
             if not df_30.empty:
                 avg_volume = (df_30['volume'] * df_30['average']).mean() / 1_000_000
-                min_p = df_30['average'].quantile(0.10) # 10-й перцентиль для коридора
-                max_p = df_30['average'].quantile(0.90) # 90-й перцентиль для коридора
+                min_p = df_30['average'].quantile(0.10)
+                max_p = df_30['average'].quantile(0.90)
                 corridor = ((max_p - min_p) / min_p) * 100 if min_p > 0 else 0
                 
-                # Тренд (сравнение начала и конца периода)
                 start_price = df_30.sort_values('date').iloc[0]['average']
                 end_price = df_30.sort_values('date').iloc[-1]['average']
                 trend = ((end_price - start_price) / start_price) * 100 if start_price > 0 else 0
@@ -233,7 +248,6 @@ if run_macro and len(selected_type_ids) > 0:
 if not st.session_state.macro_results.empty:
     st.subheader(f"Кандидаты макро-анализа (Найдено: {len(st.session_state.macro_results)})")
     
-    # Показываем таблицу
     display_df = st.session_state.macro_results.copy()
     try:
         st.dataframe(display_df.style.background_gradient(subset=['Тренд за период (%)'], cmap='coolwarm'), use_container_width=True, hide_index=True)
@@ -242,54 +256,72 @@ if not st.session_state.macro_results.empty:
         
     st.divider()
     
-    # БЛОК ИИ
     st.subheader("🤖 Этап 2: Полный ИИ-анализ стаканов")
-    st.write("Нажмите кнопку ниже, чтобы ИИ сам выбрал 5 лучших товаров из таблицы выше, запросил их стаканы и сформировал торговые ордера.")
+    st.write(f"Нажмите кнопку ниже, чтобы запустить анализ выбранной моделью: **{model_selected}**")
     
-    if st.button("2. Запустить ИИ-цикл (Gemini-3.5-flash)", type="primary", use_container_width=True):
+    if st.button("2. Запустить ИИ-цикл", type="primary", use_container_width=True):
         if not api_key:
             st.error("❌ Пожалуйста, введите ваш Gemini API Key в боковой панели слева.")
         else:
-            with st.spinner("ИИ анализирует макро-данные, делает запросы в ESI и считает уровни ордеров..."):
+            with st.spinner(f"ИИ ({model_selected}) анализирует макро-данные, запрашивает стаканы и вычисляет ордера..."):
                 try:
-                    # Инициализация клиента Gemini API
                     client = genai.Client(api_key=api_key)
-                    
-                    # Переводим макро-таблицу в CSV
                     macro_csv = display_df.to_csv(index=False)
                     
-                    # Настраиваем чат с функцией
                     chat = client.chats.create(
-                        model="gemini-3.5-flash",
+                        model=model_selected, 
                         config=types.GenerateContentConfig(
                             tools=[fetch_deep_market_data],
                             temperature=0.2, 
                         )
                     )
                     
-                    # Формируем промпт
                     system_prompt = f"""
                     Ты — экономический ИИ-аналитик EVE Online. 
                     Капитал пользователя: 2 миллиарда ISK. 
                     Налоги и брокерские комиссии (на полный цикл): {total_tax_loss}%.
                     Стратегия: "Ленивый свинг" (ордера по 500+ млн, обновление раз в неделю).
-                    ВАЖНО: В EVE действует правило 4 значащих цифр (Tick Size). Шаг изменения цены зависит от порядка числа. Округляй все цены BUY и SELL строго по этому правилу!
+                    ВНИМАНИЕ: В EVE действует правило 4 значащих цифр (Tick Size). Округляй все цены BUY и SELL строго по этому правилу!
                     
                     Макро-данные (CSV):
                     {macro_csv}
                     
                     Действия:
-                    1. Выбери 5 лучших товаров (баланс объема и ширины коридора).
-                    2. Вызови `fetch_deep_market_data` для этих 5 ID.
-                    3. Найди 10-й перцентиль цены (дно) для BUY и 90-й перцентиль (потолок) для SELL. Оцени, не мешают ли текущие ордера в стакане.
-                    4. Напиши отчет на русском с конкретными ценами покупки/продажи и ожидаемой маржой с учетом налогов.
+                    1. Выбери до 5 лучших товаров (баланс объема и ширины коридора).
+                    2. Вызови `fetch_deep_market_data` для этих ID.
+                    3. Найди 10-й перцентиль цены (дно) для BUY и 90-й перцентиль (потолок) для SELL. Оцени стаканы.
+                    4. Напиши подробный отчет на русском с конкретными ценами покупки/продажи и ожидаемой маржой с учетом налогов.
                     """
                     
-                    # Отправляем запрос (вызов функции происходит под капотом автоматически)
                     response = chat.send_message(system_prompt)
-                    
-                    st.success("✅ ИИ-анализ успешно завершен!")
-                    st.markdown(response.text)
+                    st.session_state.ai_analysis_result = response.text
+                    st.status("Анализ завершен успешно!").success("Готово.")
+                    st.rerun()
                     
                 except Exception as e:
                     st.error(f"Произошла ошибка при обращении к ИИ: {e}")
+
+# Блок вывода результатов ИИ (вынесен за пределы кнопки для постоянного отображения)
+if st.session_state.ai_analysis_result:
+    st.divider()
+    st.subheader("📋 Результаты анализа рынка от Gemini")
+    
+    # Организация интерфейса через вкладки для чтения и быстрого копирования
+    tab_view, tab_copy = st.tabs(["📄 Просмотр торгового плана", "✂️ Текст для копирования в буфер"])
+    
+    with tab_view:
+        st.markdown(st.session_state.ai_analysis_result)
+        
+    with tab_copy:
+        st.info("Используйте кнопку в правом верхнем углу блока ниже для мгновенного копирования всего отчета.")
+        st.code(st.session_state.ai_analysis_result, language="markdown")
+    
+    # Кнопка скачивания текстового файла
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    st.download_button(
+        label="📥 Скачать торговый план (.txt)",
+        data=st.session_state.ai_analysis_result,
+        file_name=f"eve_ai_report_{timestamp}.txt",
+        mime="text/plain",
+        use_container_width=True
+    )
