@@ -137,9 +137,9 @@ def fetch_deep_market_data(item_ids: list[int]) -> str:
 def fetch_available_models(token: str):
     # Железобетонные алиасы для бесплатного тарифа
     safe_defaults = [
-        "gemini-1.5-flash",
-        "gemini-1.5-flash-8b",
-        "gemini-3.1-flash-lite"
+        "gemini-3.1-flash-lite",
+        "gemini-3.5-flash",
+        "gemini-3.1-Pro"
     ]
     if not token:
         return safe_defaults
